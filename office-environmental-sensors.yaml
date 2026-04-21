@@ -1,0 +1,73 @@
+substitutions:
+  name: office-environmental-sensors
+  friendly_name: Office Environmental Sensors
+  ap_ssid: Office-Environmental-Sensors
+  i2c_sda: D2
+  i2c_scl: D1
+  elevation_m: "26.2"
+
+packages:
+  board: !include packages/board_esp8266_d1_mini.yaml
+  base: !include packages/base.yaml
+  diagnostics: !include packages/diagnostics.yaml
+
+i2c:
+  sda: ${i2c_sda}
+  scl: ${i2c_scl}
+  scan: true
+  frequency: 50000  # more stable with multiple devices on ESP8266
+
+sensor:
+  # BMP390
+  - platform: bmp3xx_i2c
+    address: 0x77
+    temperature:
+      name: "Temperature (BMP390)"
+      id: bmp390_temperature
+      device_class: temperature
+      state_class: measurement
+    pressure:
+      name: "Pressure (station)"
+      id: bmp390_pressure
+      device_class: pressure
+      state_class: measurement
+    update_interval: 30s
+
+  # Sea level pressure (computed from station pressure + elevation)
+  - platform: template
+    name: "Pressure (sea level)"
+    id: pressure_sea_level
+    device_class: pressure
+    state_class: measurement
+    unit_of_measurement: "hPa"
+    accuracy_decimals: 1
+    lambda: |-
+      if (isnan(id(bmp390_pressure).state) || isnan(id(bmp390_temperature).state)) {
+        return NAN;
+      }
+      const float altitude_m = ${elevation_m};
+      float p = id(bmp390_pressure).state;
+      float t = id(bmp390_temperature).state + 273.15;
+      return p * pow(1.0 - (0.0065 * altitude_m) / t, -5.257);
+    update_interval: 30s
+
+  # SCD40
+  - platform: scd4x
+    co2:
+      name: "CO2"
+      id: co2
+      device_class: carbon_dioxide
+      state_class: measurement
+    temperature:
+      name: "Temperature (SCD40)"
+      id: scd40_temperature
+      device_class: temperature
+      state_class: measurement
+    humidity:
+      name: "Humidity"
+      id: humidity
+      device_class: humidity
+      state_class: measurement
+    automatic_self_calibration: true
+    temperature_offset: 4
+    update_interval: 30s
