@@ -71,3 +71,4 @@ sensor:
     automatic_self_calibration: true
     temperature_offset: 4
     update_interval: 30s
+    ambient_pressure_compensation_source: bmp390_pressure
