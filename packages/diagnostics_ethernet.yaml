@@ -1,0 +1,16 @@
+sensor:
+  - platform: uptime
+    name: "${friendly_name} Uptime"
+    update_interval: 60s
+
+text_sensor:
+  - platform: ethernet_info
+    ip_address:
+      name: "${friendly_name} IP"
+
+button:
+  - platform: restart
+    name: "${friendly_name} Restart"
+
+  - platform: safe_mode
+    name: "${friendly_name} Safe Mode"

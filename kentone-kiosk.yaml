@@ -1,0 +1,240 @@
+substitutions:
+  name: kentone-kiosk
+  friendly_name: Kentone Kiosk
+  ap_ssid: Kentone-Kiosk
+  i2c_sda: GPIO4
+  i2c_scl: GPIO14
+  lightstrip_pin: GPIO32
+  ld2410_tx_pin: GPIO17
+  # Silkscreened RXD/GPIO5 on the left header. Some WT32-ETH01 boards have
+  # GPIO5 and GPIO35 swapped from what's printed - if the LD2410 never
+  # reports presence, try GPIO35 here instead.
+  ld2410_rx_pin: GPIO5
+
+packages:
+  board: !include packages/board_esp32_wt32_eth01.yaml
+  base: !include packages/base_ethernet.yaml
+  diagnostics: !include packages/diagnostics_ethernet.yaml
+
+i2c:
+  sda: ${i2c_sda}
+  scl: ${i2c_scl}
+  scan: true
+
+uart:
+  id: ld2410_uart
+  tx_pin: ${ld2410_tx_pin}
+  rx_pin: ${ld2410_rx_pin}
+  baud_rate: 256000
+
+ld2410:
+  id: ld2410_radar
+
+# Target range: 9ft (~2.74m). Only the 0.75m resolution mode reaches that
+# far (0.2m mode tops out at 1.8m), so 0.75m is the finest resolution
+# available at this range - gate 3 (2.25m-3.0m) is the first gate boundary
+# that fully covers 9ft, so gates beyond it are cut off as out of range.
+esphome:
+  on_boot:
+    - priority: 600
+      then:
+        # The LD2410 needs time after setup() to finish its own UART
+        # handshake with the module before it'll accept config commands -
+        # priority only orders on_boot triggers against each other, it
+        # doesn't delay against wall-clock time since boot.
+        - delay: 5s
+        - select.set:
+            id: ld2410_distance_resolution
+            option: "0.75m"
+        - number.set:
+            id: ld2410_max_move_gate
+            value: 3
+        - number.set:
+            id: ld2410_max_still_gate
+            value: 3
+
+select:
+  - platform: ld2410
+    distance_resolution:
+      id: ld2410_distance_resolution
+      name: "Distance Resolution"
+      internal: true
+
+number:
+  - platform: ld2410
+    max_move_distance_gate:
+      id: ld2410_max_move_gate
+      name: "Max Move Distance Gate"
+      internal: true
+    max_still_distance_gate:
+      id: ld2410_max_still_gate
+      name: "Max Still Distance Gate"
+      internal: true
+    timeout:
+      id: ld2410_timeout
+      name: "Timeout"
+      internal: true
+
+sensor:
+  # SHT41-D
+  - platform: sht4x
+    temperature:
+      name: "Temperature"
+      device_class: temperature
+      state_class: measurement
+    humidity:
+      name: "Humidity"
+      device_class: humidity
+      state_class: measurement
+    update_interval: 30s
+    # Heater disabled: confirmed via logs that every heater activation
+    # (sht4x heater turning on) was immediately followed by a spurious
+    # PIR trigger, reproduced across both 30s and 47s update_interval
+    # builds. Root cause: SHT41 draws its 3.3V from the ESP32's onboard
+    # regulator and grounds to the ESP32 header directly, while the PIR
+    # shares the 5V/GND rail with the ESP32 - the heater's current pulse
+    # rides the ESP32-to-rail ground wire and briefly shifts the ESP32's
+    # local ground reference relative to the PIR's, tipping GPIO14. Needs
+    # a dedicated SHT41 ground wire to the shared rail (star topology)
+    # and/or bulk decoupling at the ESP32 5V input before re-enabling.
+    # heater_power: Low
+    # heater_time: Short
+    # heater_max_duty: 0.005
+
+  # LD2410 mmWave presence radar
+  - platform: ld2410
+    moving_distance:
+      name: "Moving Distance"
+    still_distance:
+      name: "Still Distance"
+
+binary_sensor:
+  # LD2410 mmWave presence radar
+  - platform: ld2410
+    has_target:
+      name: "Presence"
+    has_moving_target:
+      name: "Motion"
+    has_still_target:
+      name: "Still Presence"
+
+output:
+  - platform: ledc
+    pin: ${lightstrip_pin}
+    id: lightstrip_pwm
+    max_power: 80%
+
+light:
+  # Fixed 4000K lightstrip - brightness only
+  - platform: monochromatic
+    id: kiosk_light
+    name: "Lights"
+    output: lightstrip_pwm
+    effects:
+      # Models a real glow-starter ignition cycle: the starter heats the
+      # tube's cathode filaments in the dark for ~0.5-0.9s, then the bimetal
+      # contact reopens and fires a strike attempt (a quick double-flash).
+      # If the filaments weren't hot enough yet the strike fails and the
+      # whole preheat cycle repeats, more likely to succeed each time. Once
+      # struck, real tubes take a while to reach full output (mercury needs
+      # to vaporize) and even settled tubes occasionally show a brief dip,
+      # so those are modeled too as a ramp and a rare post-settle blip.
+      - lambda:
+          name: "Fluorescent On"
+          update_interval: 20ms
+          lambda: |-
+            enum Phase { PREHEAT, FLASH1, GAP, FLASH2, RAMP, STEADY, BLIP };
+            static Phase phase = PREHEAT;
+            static uint8_t attempt = 0;
+            static uint32_t phase_start = 0;
+            static uint32_t phase_duration = 0;
+            static float target_brightness = 1.0f;
+            static float blip_brightness = 1.0f;
+            const uint8_t max_attempts = 5;
+            const float ramp_start_fraction = 0.35f;
+
+            if (initial_run) {
+              phase = PREHEAT;
+              attempt = 0;
+              phase_start = millis();
+              phase_duration = random(400, 900);
+              target_brightness = id(kiosk_light).current_values.get_brightness();
+              if (target_brightness < 0.05f) {
+                target_brightness = 1.0f;
+              }
+            }
+
+            auto call = id(kiosk_light).turn_on();
+            call.set_transition_length(0);
+            uint32_t elapsed = millis() - phase_start;
+
+            if (phase == PREHEAT || phase == GAP) {
+              call.set_brightness(0.0f);
+              call.perform();
+              if (elapsed >= phase_duration) {
+                phase_start = millis();
+                phase_duration = random(20, 40);
+                phase = (phase == PREHEAT) ? FLASH1 : FLASH2;
+              }
+              return;
+            }
+
+            if (phase == FLASH1 || phase == FLASH2) {
+              call.set_brightness(0.5f);
+              call.perform();
+              if (elapsed < phase_duration) {
+                return;
+              }
+              phase_start = millis();
+              if (phase == FLASH1) {
+                phase = GAP;
+                phase_duration = random(40, 80);
+                return;
+              }
+              // FLASH2 finished - decide whether this strike attempt caught.
+              attempt++;
+              float success_chance = 0.10f + 0.15f * attempt;
+              float roll = (float) random(0, 1000) / 1000.0f;
+              if (roll < success_chance || attempt >= max_attempts) {
+                phase = RAMP;
+                phase_duration = 6000;  // mercury vaporizing, tube brightening
+              } else {
+                phase = PREHEAT;
+                phase_duration = random(400, 900);
+              }
+              return;
+            }
+
+            if (phase == RAMP) {
+              float progress = (float) elapsed / (float) phase_duration;
+              if (progress >= 1.0f) {
+                progress = 1.0f;
+                phase = STEADY;
+              }
+              float low = ramp_start_fraction * target_brightness;
+              call.set_brightness(low + (target_brightness - low) * progress);
+              call.perform();
+              return;
+            }
+
+            if (phase == BLIP) {
+              call.set_brightness(blip_brightness);
+              call.perform();
+              if (elapsed >= phase_duration) {
+                phase = STEADY;
+              }
+              return;
+            }
+
+            // STEADY: holds target brightness, with a rare brief dip to
+            // mimic a ballast that struck fine but isn't perfectly stable.
+            if (random(0, 10000) < 3) {
+              blip_brightness = target_brightness * ((float) random(50, 85) / 100.0f);
+              phase = BLIP;
+              phase_start = millis();
+              phase_duration = random(80, 150);
+              call.set_brightness(blip_brightness);
+            } else {
+              call.set_brightness(target_brightness);
+            }
+            call.perform();
