@@ -1,5 +1,5 @@
 substitutions:
-  name: kentone-kiosk
+  name: iot-kentone-kiosk
   friendly_name: Kentone Kiosk
   ap_ssid: Kentone-Kiosk
   i2c_sda: GPIO4
