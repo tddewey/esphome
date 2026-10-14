@@ -1,0 +1,83 @@
+# Bill of Materials
+# ─────────────────────────────────────────────────────────────────────────────
+# ESP32-S3 N16R8 devkit   16MB quad flash, 8MB octal PSRAM
+# PCM5102 I2S DAC board   No I2C/control interface; line-level output
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Wiring (ESP32-S3 → PCM5102)
+# ─────────────────────────────────────────────────────────────────────────────
+#   3V3    → VIN
+#   GND    → GND
+#   GPIO4  → BCK
+#   GPIO5  → LCK (LRCK / word select)
+#   GPIO6  → DIN
+#   SCK    → GND  (DAC derives its own clock from BCK via its PLL)
+#   Solder pads: H1L (FLT) → L, H2L (DEMP) → L, H3L (XSMT) → H (unmuted),
+#                H4L (FMT) → L (I2S)
+#
+# Avoid on N16R8: GPIO26-37 (flash/octal PSRAM), GPIO0/3/45/46 (strapping),
+# GPIO19/20 (USB).
+# ─────────────────────────────────────────────────────────────────────────────
+
+substitutions:
+  name: speaker-prototype-alpha
+  friendly_name: SpeakerPrototypeAlpha
+  ap_ssid: SpeakerPrototypeAlpha
+  i2s_bclk_pin: GPIO4
+  i2s_lrclk_pin: GPIO5
+  i2s_dout_pin: GPIO6
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+  ignore_not_found: false
+
+packages:
+  base: !include packages/base.yaml
+  diagnostics: !include packages/diagnostics.yaml
+
+# Different network from the other devices. Overrides the wifi credentials from
+# base.yaml; switch back to wifi_ssid / wifi_password once on the main network.
+wifi:
+  ssid: !secret wifi_ssid_fruitwood
+  password: !secret wifi_password_fruitwood
+  # Radio sleep between beacons can jitter the audio stream.
+  power_save_mode: none
+
+i2s_audio:
+  i2s_lrclk_pin: ${i2s_lrclk_pin}
+  i2s_bclk_pin: ${i2s_bclk_pin}
+
+speaker:
+  - platform: i2s_audio
+    id: dac_speaker
+    dac_type: external
+    i2s_dout_pin: ${i2s_dout_pin}
+    channel: stereo
+    sample_rate: 48000
+    # Keep BCK/LRCK running between tracks so the DAC's PLL (SCK grounded)
+    # stays locked; stopping/restarting the clock causes pops at play start.
+    timeout: never
+
+sendspin:
+
+media_source:
+  - platform: sendspin
+    id: sendspin_source
+
+media_player:
+  - platform: speaker_source
+    id: speaker_player
+    name: None
+    volume_initial: 0.3
+    media_pipeline:
+      speaker: dac_speaker
+      format: FLAC
+      sources:
+        - sendspin_source
