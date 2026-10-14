@@ -122,7 +122,7 @@ output:
   - platform: ledc
     pin: ${lightstrip_pin}
     id: lightstrip_pwm
-    max_power: 80%
+    max_power: 60%
 
 light:
   # Fixed 4000K lightstrip - brightness only
