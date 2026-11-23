@@ -1,0 +1,67 @@
+# Bill of Materials
+# ─────────────────────────────────────────────────────────────────────────────
+# Component                 Notes
+# ─────────────────────────────────────────────────────────────────────────────
+# Wemos D1 Mini (ESP8266)   Main controller
+# XY-MOS PWM MOSFET module  Low-side switch (switches load negative). 5-36V load.
+# Buck converter            Load supply -> 5.0V for the D1 Mini 5V pin.
+#                           Needs >=40V input rating if you ever feed it 24V
+#                           (LM2596-type with 50V caps; NOT Mini360 / 23V max).
+# Flyback diode             Schottky (e.g. SS34 / 1N5819) across the load, cathode
+#                           to +V. Required for the motor-driven ASG-01-R beacon.
+# Barrel jacks (in + out)   Same polarity both sides; out jack negative is switched.
+# Inline fuse               ~2A on the input positive (no reverse-polarity
+#                           protection on the XY-MOS).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Wiring
+# ─────────────────────────────────────────────────────────────────────────────
+# Input jack  + ──┬── fuse ──┬── XY-MOS IN+  ── XY-MOS OUT+ ── Output jack +
+#                 │          └── Buck IN+
+# Input jack  - ──┬── XY-MOS IN-   (module input negative)
+#                 ├── Buck IN-  / Buck OUT-
+#                 └── D1 Mini GND  ── XY-MOS signal GND (must be common!)
+# Buck OUT+ (set to 5.0V BEFORE connecting) ── D1 Mini 5V pin (not 3V3!)
+# D1 Mini D5 (GPIO14) ── XY-MOS PWM/trigger input
+# XY-MOS OUT- ── Output jack -   (this is the switched side)
+#
+# Notes
+# ─────────────────────────────────────────────────────────────────────────────
+# - Supply voltage must match the load (12V beacon -> 12V adapter). The YAML is
+#   identical for 5V / 12V / 24V loads; only the supply and buck change.
+# - 5V supply: a buck can't regulate 5V down to 5V. Bypass the buck (feed the
+#   D1 Mini 5V pin straight from the input) or power the D1 Mini over USB.
+# - Disconnect the buck output from the D1 Mini before flashing over USB.
+# - PWM is software on ESP8266 (jitters slightly under Wi-Fi load). Fine for
+#   incandescent/motor/resistive loads. Do NOT dim loads with built-in
+#   switching electronics (LED drivers, USB gadgets, flashing beacons).
+# ─────────────────────────────────────────────────────────────────────────────
+
+substitutions:
+  name: signal-beacon
+  friendly_name: Signal Beacon
+  ap_ssid: Signal-Beacon
+  pwm_pin: D5
+  pwm_frequency: 1000Hz
+
+packages:
+  board: !include packages/board_esp8266_d1_mini.yaml
+  base: !include packages/base.yaml
+  diagnostics: !include packages/diagnostics.yaml
+
+output:
+  - platform: esp8266_pwm
+    id: mosfet_pwm
+    pin: ${pwm_pin}
+    frequency: ${pwm_frequency}
+
+# On/off plus optional brightness. Linear gamma: duty cycle maps straight to
+# average load voltage (no perceptual curve).
+light:
+  - platform: monochromatic
+    name: "${friendly_name} Output"
+    output: mosfet_pwm
+    id: beacon_output
+    gamma_correct: 1.0
+    default_transition_length: 0s
+    restore_mode: ALWAYS_OFF
